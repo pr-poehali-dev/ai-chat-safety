@@ -4,98 +4,306 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    --background: 0 0% 0%;
+    --foreground: 0 0% 100%;
 
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card: 0 0% 5%;
+    --card-foreground: 0 0% 100%;
 
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 5%;
+    --popover-foreground: 0 0% 100%;
 
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
+    --primary: 0 0% 100%;
+    --primary-foreground: 0 0% 0%;
 
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 0 0% 10%;
+    --secondary-foreground: 0 0% 100%;
 
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    --muted: 0 0% 15%;
+    --muted-foreground: 0 0% 60%;
 
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    --accent: 0 0% 20%;
+    --accent-foreground: 0 0% 100%;
 
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --border: 0 0% 20%;
+    --input: 0 0% 15%;
+    --ring: 0 0% 100%;
 
-    --radius: 0.5rem;
+    --radius: 0rem;
 
-    --sidebar-background: 0 0% 98%;
+    --sidebar-background: 0 0% 3%;
+    --sidebar-foreground: 0 0% 90%;
+    --sidebar-primary: 0 0% 100%;
+    --sidebar-primary-foreground: 0 0% 0%;
+    --sidebar-accent: 0 0% 12%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 0 0% 18%;
+    --sidebar-ring: 0 0% 100%;
 
-    --sidebar-foreground: 240 5.3% 26.1%;
-
-    --sidebar-primary: 240 5.9% 10%;
-
-    --sidebar-primary-foreground: 0 0% 98%;
-
-    --sidebar-accent: 240 4.8% 95.9%;
-
-    --sidebar-accent-foreground: 240 5.9% 10%;
-
-    --sidebar-border: 220 13% 91%;
-
-    --sidebar-ring: 217.2 91.2% 59.8%;
-  }
-
-  .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
-    --sidebar-background: 240 5.9% 10%;
-    --sidebar-foreground: 240 4.8% 95.9%;
-    --sidebar-primary: 224.3 76.3% 48%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 240 3.7% 15.9%;
-    --sidebar-accent-foreground: 240 4.8% 95.9%;
-    --sidebar-border: 240 3.7% 15.9%;
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    --pixel-size: 2px;
   }
 }
 
 @layer base {
   * {
     @apply border-border;
+    image-rendering: pixelated;
   }
 
   body {
     @apply bg-background text-foreground;
+    font-family: "Share Tech Mono", monospace;
+    background-color: #000;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+    background-size: 8px 8px;
+    cursor: crosshair;
   }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #000;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #fff;
+    image-rendering: pixelated;
+  }
+
+  ::selection {
+    background: #fff;
+    color: #000;
+  }
+}
+
+@layer components {
+  .pixel-border {
+    border: 2px solid #fff;
+    box-shadow:
+      -2px 0 0 0 #000,
+      2px 0 0 0 #000,
+      0 -2px 0 0 #000,
+      0 2px 0 0 #000,
+      inset -2px 0 0 0 #333,
+      inset 2px 0 0 0 #333,
+      inset 0 -2px 0 0 #333,
+      inset 0 2px 0 0 #333;
+  }
+
+  .pixel-border-sm {
+    border: 2px solid #fff;
+    outline: 2px solid #000;
+    outline-offset: 2px;
+  }
+
+  .pixel-btn {
+    font-family: "Press Start 2P", monospace;
+    font-size: 8px;
+    border: 2px solid #fff;
+    background: #000;
+    color: #fff;
+    padding: 8px 12px;
+    cursor: pointer;
+    image-rendering: pixelated;
+    transition: all 0.05s steps(1);
+    letter-spacing: 0.05em;
+    position: relative;
+  }
+
+  .pixel-btn:hover {
+    background: #fff;
+    color: #000;
+  }
+
+  .pixel-btn:active {
+    transform: translate(2px, 2px);
+  }
+
+  .pixel-btn-active {
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  .pixel-input {
+    font-family: "Share Tech Mono", monospace;
+    font-size: 13px;
+    border: 2px solid #666;
+    background: #0a0a0a;
+    color: #fff;
+    padding: 10px 14px;
+    width: 100%;
+    outline: none;
+    transition: border-color 0.05s steps(1);
+  }
+
+  .pixel-input:focus {
+    border-color: #fff;
+  }
+
+  .pixel-input::placeholder {
+    color: #444;
+  }
+
+  .scan-lines {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .scan-lines::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.15) 2px,
+      rgba(0, 0, 0, 0.15) 4px
+    );
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  .blink {
+    animation: blink 1s steps(1) infinite;
+  }
+
+  .pixel-font {
+    font-family: "Press Start 2P", monospace;
+  }
+
+  .mono-font {
+    font-family: "Share Tech Mono", monospace;
+  }
+
+  .glitch {
+    position: relative;
+  }
+
+  .glitch::before {
+    content: attr(data-text);
+    position: absolute;
+    left: 2px;
+    text-shadow: -1px 0 rgba(255, 255, 255, 0.3);
+    top: 0;
+    color: rgba(255, 255, 255, 0.7);
+    overflow: hidden;
+    clip: rect(0, 900px, 0, 0);
+    animation: glitch-anim 3s infinite linear alternate-reverse;
+  }
+
+  .chat-bubble-user {
+    background: #fff;
+    color: #000;
+    border: 2px solid #fff;
+    padding: 10px 14px;
+    font-family: "Share Tech Mono", monospace;
+    font-size: 13px;
+    align-self: flex-end;
+    max-width: 70%;
+    word-break: break-word;
+  }
+
+  .chat-bubble-ai {
+    background: #0a0a0a;
+    color: #fff;
+    border: 2px solid #333;
+    padding: 10px 14px;
+    font-family: "Share Tech Mono", monospace;
+    font-size: 13px;
+    align-self: flex-start;
+    max-width: 70%;
+    word-break: break-word;
+  }
+
+  .tag-blocked {
+    font-family: "Press Start 2P", monospace;
+    font-size: 7px;
+    background: #fff;
+    color: #000;
+    padding: 3px 6px;
+    letter-spacing: 0.1em;
+  }
+
+  .tag-safe {
+    font-family: "Press Start 2P", monospace;
+    font-size: 7px;
+    background: #000;
+    color: #fff;
+    border: 1px solid #555;
+    padding: 3px 6px;
+    letter-spacing: 0.1em;
+  }
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes glitch-anim {
+  0% {
+    clip: rect(14px, 9999px, 102px, 0);
+    transform: skew(0.1deg);
+  }
+  20% {
+    clip: rect(67px, 9999px, 22px, 0);
+    transform: skew(0.5deg);
+  }
+  40% {
+    clip: rect(3px, 9999px, 78px, 0);
+    transform: skew(-0.2deg);
+  }
+  60% {
+    clip: rect(89px, 9999px, 12px, 0);
+    transform: skew(0.3deg);
+  }
+  80% {
+    clip: rect(34px, 9999px, 55px, 0);
+    transform: skew(-0.1deg);
+  }
+  100% {
+    clip: rect(56px, 9999px, 41px, 0);
+    transform: skew(0.4deg);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scanDown {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(100vh);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s steps(4) forwards;
+}
+
+.typing-cursor::after {
+  content: "█";
+  animation: blink 0.8s steps(1) infinite;
+  margin-left: 2px;
 }
