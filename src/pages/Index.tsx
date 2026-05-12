@@ -1,275 +1,466 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import Icon from '@/components/ui/icon';
+
+const API = {
+  auth: "https://functions.poehali.dev/38ca5fcc-0335-47f5-ae47-4b4284e3130a",
+  chat: "https://functions.poehali.dev/3d9867c7-a62d-4782-ade5-736146cf07f2",
+  search: "https://functions.poehali.dev/56d473a5-9842-4138-9780-3298778f5012",
+  docs: "https://functions.poehali.dev/566d6c0c-e3b3-4d7c-8066-cef94e75fcd6",
+};
+
+const TG_BOT_NAME = "rm_xxxx_beta_bot";
 
 type Section = 'home' | 'chats' | 'docs' | 'search' | 'settings' | 'archive';
 
-interface Message {
+interface User {
   id: number;
-  role: 'user' | 'ai';
-  text: string;
-  blocked?: boolean;
+  telegram_id: number;
+  username: string;
+  first_name: string;
+  last_name: string;
+  photo_url: string;
+  filter_level: 'low' | 'medium' | 'high';
 }
 
 interface Chat {
   id: number;
   title: string;
-  date: string;
-  messages: Message[];
+  created_at: string;
+  updated_at: string;
+}
+
+interface Message {
+  id: number;
+  role: 'user' | 'ai';
+  content: string;
+  blocked: boolean;
+  block_reason?: string;
+  created_at: string;
 }
 
 interface SearchResult {
-  id: number;
   title: string;
   url: string;
   snippet: string;
   safe: boolean;
 }
 
-const BLOCKED_WORDS = ['мат', 'хрен', 'блин', 'черт', 'дурак'];
-const DANGEROUS_PATTERNS = ['взрыв', 'оружи', 'убий', 'хак', 'взлом'];
-const ADULT_PATTERNS = ['18+', 'порн', 'эротик', 'секс'];
-
-function checkContent(text: string, level: 'low' | 'medium' | 'high'): { blocked: boolean; reason: string } {
-  const lower = text.toLowerCase();
-  if (level !== 'low') {
-    for (const w of DANGEROUS_PATTERNS) {
-      if (lower.includes(w)) return { blocked: true, reason: 'ОПАСНЫЙ ЗАПРОС' };
-    }
-  }
-  if (level === 'high') {
-    for (const w of ADULT_PATTERNS) {
-      if (lower.includes(w)) return { blocked: true, reason: 'КОНТЕНТ 18+' };
-    }
-    for (const w of BLOCKED_WORDS) {
-      if (lower.includes(w)) return { blocked: true, reason: 'НЕЦЕНЗУРНАЯ ЛЕКСИКА' };
-    }
-  }
-  return { blocked: false, reason: '' };
+interface Doc {
+  id: number;
+  filename: string;
+  file_size: number;
+  status: string;
+  safe: boolean;
+  preview: string;
+  created_at: string;
 }
 
-const MOCK_SEARCH_RESULTS: SearchResult[] = [
-  { id: 1, title: 'Что такое нейронные сети?', url: 'wiki.example.com/neural-networks', snippet: 'Нейронные сети — математические модели, имитирующие работу мозга человека...', safe: true },
-  { id: 2, title: 'Машинное обучение для начинающих', url: 'learn.example.com/ml-basics', snippet: 'Введение в машинное обучение: основные алгоритмы и применения в реальной жизни...', safe: true },
-  { id: 3, title: 'История искусственного интеллекта', url: 'history.example.com/ai', snippet: 'От первых экспертных систем 1960-х до современных языковых моделей...', safe: true },
-  { id: 4, title: 'ЗАБЛОКИРОВАНО', url: 'unsafe.example.com', snippet: 'Этот результат заблокирован фильтром безопасности.', safe: false },
-];
-
-const INITIAL_CHATS: Chat[] = [
-  {
-    id: 1, title: 'ДИАЛОГ #001', date: '2026-05-10',
-    messages: [
-      { id: 1, role: 'user', text: 'Привет! Как дела?' },
-      { id: 2, role: 'ai', text: 'СИСТЕМА АКТИВНА. Все модули работают в штатном режиме. Чем могу помочь?' },
-    ]
-  },
-  {
-    id: 2, title: 'ДИАЛОГ #002', date: '2026-05-11',
-    messages: [
-      { id: 1, role: 'user', text: 'Объясни принцип работы ИИ' },
-      { id: 2, role: 'ai', text: 'ИИ — это набор алгоритмов, обученных на больших массивах данных для выполнения задач, требующих интеллекта.' },
-    ]
-  },
-];
+function apiFetch(url: string, opts: RequestInit = {}, token?: string) {
+  const headers: Record<string, string> = { "Content-Type": "application/json", ...(opts.headers as Record<string, string> || {}) };
+  if (token) headers["X-Session-Token"] = token;
+  return fetch(url, { ...opts, headers });
+}
 
 export default function Index() {
+  const [bootDone, setBootDone] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+  const [token, setToken] = useState<string>(() => localStorage.getItem("rm_token") || "");
   const [section, setSection] = useState<Section>('home');
-  const [chats, setChats] = useState<Chat[]>(INITIAL_CHATS);
+  const [authError, setAuthError] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+
+  // Chats
+  const [chats, setChats] = useState<Chat[]>([]);
   const [activeChat, setActiveChat] = useState<Chat | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
+  const [sending, setSending] = useState(false);
+  const [chatsLoading, setChatsLoading] = useState(false);
+
+  // Search
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchBlocked, setSearchBlocked] = useState(false);
+  const [searchReason, setSearchReason] = useState('');
   const [searchDone, setSearchDone] = useState(false);
-  const [filterLevel, setFilterLevel] = useState<'low' | 'medium' | 'high'>('medium');
-  const [language, setLanguage] = useState<'ru' | 'en'>('ru');
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
-  const [twoFactor, setTwoFactor] = useState(false);
-  const [uploadedDoc, setUploadedDoc] = useState<string | null>(null);
-  const [docAnalysis, setDocAnalysis] = useState<string | null>(null);
-  const [bootDone, setBootDone] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+
+  // Docs
+  const [docs, setDocs] = useState<Doc[]>([]);
+  const [docsLoading, setDocsLoading] = useState(false);
+  const [uploadResult, setUploadResult] = useState<Record<string, unknown> | null>(null);
+  const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Settings
+  const [filterLevel, setFilterLevel] = useState<'low' | 'medium' | 'high'>('medium');
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsSaved, setSettingsSaved] = useState(false);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Boot animation
   useEffect(() => {
-    const t = setTimeout(() => setBootDone(true), 1800);
+    const t = setTimeout(() => setBootDone(true), 1600);
     return () => clearTimeout(t);
   }, []);
 
+  // Auto-login if token exists
+  useEffect(() => {
+    if (token && bootDone) {
+      apiFetch(API.auth, {}, token)
+        .then(r => r.json())
+        .then(data => {
+          if (data.id) {
+            setUser(data);
+            setFilterLevel(data.filter_level || 'medium');
+          } else {
+            localStorage.removeItem("rm_token");
+            setToken("");
+          }
+        })
+        .catch(() => {
+          localStorage.removeItem("rm_token");
+          setToken("");
+        });
+    }
+  }, [bootDone]);
+
+  // Telegram login callback
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).onTelegramAuth = async (tgData: Record<string, unknown>) => {
+      setAuthLoading(true);
+      setAuthError("");
+      try {
+        const res = await apiFetch(API.auth, {
+          method: "POST",
+          body: JSON.stringify({ tg_data: tgData })
+        });
+        const data = await res.json();
+        if (data.token) {
+          localStorage.setItem("rm_token", data.token);
+          setToken(data.token);
+          setUser(data.user);
+          setFilterLevel(data.user.filter_level || 'medium');
+        } else {
+          setAuthError("Ошибка авторизации. Попробуй ещё раз.");
+        }
+      } catch {
+        setAuthError("Ошибка соединения.");
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+  }, []);
+
+  // Load Telegram widget script
+  useEffect(() => {
+    if (!bootDone || user) return;
+    const existing = document.getElementById("tg-login-script");
+    if (existing) return;
+    const script = document.createElement("script");
+    script.id = "tg-login-script";
+    script.src = "https://telegram.org/js/telegram-widget.js?22";
+    script.setAttribute("data-telegram-login", TG_BOT_NAME);
+    script.setAttribute("data-size", "large");
+    script.setAttribute("data-onauth", "onTelegramAuth(user)");
+    script.setAttribute("data-request-access", "write");
+    script.async = true;
+    document.getElementById("tg-widget-container")?.appendChild(script);
+  }, [bootDone, user]);
+
+  // Scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [activeChat?.messages]);
+  }, [messages]);
 
-  function sendMessage() {
-    if (!inputText.trim() || !activeChat) return;
-    const check = checkContent(inputText, filterLevel);
-    const userMsg: Message = { id: Date.now(), role: 'user', text: inputText };
-    let aiMsg: Message;
-    if (check.blocked) {
-      aiMsg = { id: Date.now() + 1, role: 'ai', text: `[${check.reason}] ЗАПРОС ЗАБЛОКИРОВАН СИСТЕМОЙ ФИЛЬТРАЦИИ.`, blocked: true };
-    } else {
-      aiMsg = { id: Date.now() + 1, role: 'ai', text: `ОБРАБОТКА ЗАПРОСА: "${inputText.substring(0, 50)}..." — Ответ сгенерирован в штатном режиме. Все данные обработаны безопасно.` };
+  // Load chats when entering chats/archive
+  useEffect(() => {
+    if ((section === 'chats' || section === 'archive') && user && token) {
+      loadChats();
     }
-    const updated = chats.map(c =>
-      c.id === activeChat.id ? { ...c, messages: [...c.messages, userMsg, aiMsg] } : c
-    );
-    setChats(updated);
-    setActiveChat(prev => prev ? { ...prev, messages: [...prev.messages, userMsg, aiMsg] } : prev);
-    setInputText('');
+    if (section === 'docs' && user && token) {
+      loadDocs();
+    }
+  }, [section, user]);
+
+  async function loadChats() {
+    setChatsLoading(true);
+    try {
+      const res = await apiFetch(API.chat, {}, token);
+      const data = await res.json();
+      setChats(data.chats || []);
+    } finally {
+      setChatsLoading(false);
+    }
   }
 
-  function createNewChat() {
-    const newChat: Chat = {
-      id: Date.now(),
-      title: `ДИАЛОГ #${String(chats.length + 1).padStart(3, '0')}`,
-      date: new Date().toISOString().split('T')[0],
-      messages: [{ id: 1, role: 'ai', text: 'НОВЫЙ СЕАНС ИНИЦИАЛИЗИРОВАН. Введите запрос.' }]
-    };
-    setChats(prev => [...prev, newChat]);
-    setActiveChat(newChat);
+  async function loadMessages(chatId: number) {
+    const res = await apiFetch(`${API.chat}?chat_id=${chatId}`, {}, token);
+    const data = await res.json();
+    setMessages(data.messages || []);
+  }
+
+  async function openChat(chat: Chat) {
+    setActiveChat(chat);
+    setMessages([]);
+    await loadMessages(chat.id);
     setSection('chats');
   }
 
-  function doSearch() {
-    if (!searchQuery.trim()) return;
-    const check = checkContent(searchQuery, filterLevel);
-    if (check.blocked) {
-      setSearchResults([{ id: 0, title: `ЗАБЛОКИРОВАНО: ${check.reason}`, url: '', snippet: 'Запрос заблокирован системой безопасности.', safe: false }]);
-    } else {
-      setSearchResults(MOCK_SEARCH_RESULTS.filter(r =>
-        filterLevel === 'high' ? r.safe : true
-      ));
+  async function createChat() {
+    const res = await apiFetch(API.chat, {
+      method: "POST",
+      body: JSON.stringify({ action: "create", title: "Новый диалог" })
+    }, token);
+    const data = await res.json();
+    if (data.id) {
+      const newChat: Chat = { id: data.id, title: data.title, created_at: data.created_at, updated_at: data.created_at };
+      setChats(prev => [newChat, ...prev]);
+      setActiveChat(newChat);
+      setMessages([{ id: 0, role: 'ai', content: "НОВЫЙ СЕАНС ИНИЦИАЛИЗИРОВАН. Система RM-XXXX_BETA активна. Введите запрос.", blocked: false, created_at: new Date().toISOString() }]);
+      setSection('chats');
     }
-    setSearchDone(true);
   }
 
-  function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+  async function sendMessage() {
+    if (!inputText.trim() || !activeChat || sending) return;
+    const text = inputText.trim();
+    setInputText('');
+    setSending(true);
+    // Optimistic user message
+    const tmpId = Date.now();
+    setMessages(prev => [...prev, { id: tmpId, role: 'user', content: text, blocked: false, created_at: new Date().toISOString() }]);
+    try {
+      const res = await apiFetch(API.chat, {
+        method: "POST",
+        body: JSON.stringify({ action: "send", chat_id: activeChat.id, text })
+      }, token);
+      const data = await res.json();
+      setMessages(prev => prev.filter(m => m.id !== tmpId).concat([data.user_message, data.ai_message]));
+      // Update chat title
+      setChats(prev => prev.map(c => c.id === activeChat.id ? { ...c, title: data.user_message.content.substring(0, 40) + (data.user_message.content.length > 40 ? "..." : ""), updated_at: new Date().toISOString() } : c));
+    } catch {
+      setMessages(prev => prev.filter(m => m.id !== tmpId));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function doSearch() {
+    if (!searchQuery.trim() || searchLoading) return;
+    setSearchLoading(true);
+    setSearchDone(false);
+    setSearchBlocked(false);
+    try {
+      const res = await apiFetch(`${API.search}?q=${encodeURIComponent(searchQuery)}`, {}, token);
+      const data = await res.json();
+      if (data.blocked) {
+        setSearchBlocked(true);
+        setSearchReason(data.reason);
+        setSearchResults([]);
+      } else {
+        setSearchBlocked(false);
+        setSearchResults(data.results || []);
+      }
+      setSearchDone(true);
+    } finally {
+      setSearchLoading(false);
+    }
+  }
+
+  async function loadDocs() {
+    setDocsLoading(true);
+    try {
+      const res = await apiFetch(API.docs, {}, token);
+      const data = await res.json();
+      setDocs(data.documents || []);
+    } finally {
+      setDocsLoading(false);
+    }
+  }
+
+  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    setUploadedDoc(file.name);
-    setDocAnalysis(null);
-    setTimeout(() => {
-      setDocAnalysis(`АНАЛИЗ ЗАВЕРШЁН: ${file.name}\n\nТип: ТЕКСТОВЫЙ ДОКУМЕНТ\nРазмер: ${(file.size / 1024).toFixed(1)} KB\nЯзык: РУССКИЙ\nСтатус: БЕЗОПАСНО\n\nСОДЕРЖИМОЕ:\nДокумент проверен на наличие запрещённого контента. Нарушений не обнаружено. Готов к обработке.`);
-    }, 1200);
+    setUploading(true);
+    setUploadResult(null);
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const raw = ev.target?.result as ArrayBuffer;
+      const bytes = new Uint8Array(raw);
+      let binary = '';
+      bytes.forEach(b => binary += String.fromCharCode(b));
+      const b64 = btoa(binary);
+      try {
+        const res = await apiFetch(API.docs, {
+          method: "POST",
+          body: JSON.stringify({ filename: file.name, file_size: file.size, content: b64 })
+        }, token);
+        const data = await res.json();
+        setUploadResult(data);
+        setDocs(prev => [{ id: data.id, filename: data.filename, file_size: data.file_size, status: 'done', safe: data.safe, preview: data.preview, created_at: data.created_at }, ...prev]);
+      } finally {
+        setUploading(false);
+      }
+    };
+    reader.readAsArrayBuffer(file);
   }
 
+  async function saveSettings() {
+    setSettingsSaving(true);
+    await apiFetch(API.auth, {
+      method: "PUT",
+      body: JSON.stringify({ filter_level: filterLevel })
+    }, token);
+    if (user) setUser({ ...user, filter_level: filterLevel });
+    setSettingsSaving(false);
+    setSettingsSaved(true);
+    setTimeout(() => setSettingsSaved(false), 2000);
+  }
+
+  function logout() {
+    localStorage.removeItem("rm_token");
+    setToken("");
+    setUser(null);
+    setChats([]);
+    setMessages([]);
+    setActiveChat(null);
+  }
+
+  // BOOT SCREEN
   if (!bootDone) {
     return (
       <div className="min-h-screen bg-black flex flex-col items-center justify-center">
-        <div className="pixel-font text-white text-center space-y-6 animate-fade-in">
-          <div className="text-xs tracking-widest mb-8 text-gray-500">INITIALIZING SYSTEM...</div>
-          <div className="text-lg sm:text-2xl tracking-tight leading-relaxed">
+        <div className="pixel-font text-white text-center space-y-6">
+          <div className="text-xs tracking-widest text-gray-500">INITIALIZING SYSTEM...</div>
+          <div className="text-lg sm:text-2xl tracking-tight leading-relaxed mt-4">
             RM<span className="text-gray-400">-</span>XXXX<span className="text-gray-600">_</span>BETA
           </div>
-          <div className="flex gap-2 justify-center mt-6">
+          <div className="flex gap-2 justify-center mt-4">
             {[0,1,2,3,4,5,6,7].map(i => (
-              <div
-                key={i}
-                className="w-2 h-2 bg-white"
-                style={{ animation: `blink 0.8s steps(1) ${i * 0.1}s infinite` }}
-              />
+              <div key={i} className="w-2 h-2 bg-white" style={{ animation: `blink 0.8s steps(1) ${i * 0.1}s infinite` }} />
             ))}
           </div>
-          <div className="text-xs text-gray-600 mt-8 typing-cursor">ЗАГРУЗКА МОДУЛЕЙ БЕЗОПАСНОСТИ</div>
+          <div className="text-xs text-gray-600 mt-4 typing-cursor">ЗАГРУЗКА МОДУЛЕЙ БЕЗОПАСНОСТИ</div>
         </div>
       </div>
     );
   }
 
-  const navItems: { id: Section; label: string; icon: string }[] = [
-    { id: 'home', label: 'ГЛАВНАЯ', icon: 'Home' },
-    { id: 'chats', label: 'ЧАТЫ', icon: 'MessageSquare' },
-    { id: 'docs', label: 'ДОКУМЕНТЫ', icon: 'FileText' },
-    { id: 'search', label: 'ПОИСК', icon: 'Search' },
-    { id: 'archive', label: 'АРХИВ', icon: 'Archive' },
-    { id: 'settings', label: 'НАСТРОЙКИ', icon: 'Settings' },
+  // AUTH SCREEN
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-black flex flex-col items-center justify-center px-4">
+        <div className="w-full max-w-sm animate-fade-in">
+          <div className="pixel-font text-white text-center mb-2 text-xs text-gray-500 tracking-widest">ДОБРО ПОЖАЛОВАТЬ В</div>
+          <h1 className="pixel-font text-2xl sm:text-3xl text-white text-center mb-1 leading-relaxed">RM-XXXX</h1>
+          <div className="pixel-font text-sm text-gray-500 text-center mb-10 typing-cursor">_BETA</div>
+
+          <div className="border-2 border-gray-800 p-6 mb-4">
+            <div className="pixel-font text-xs text-gray-500 mb-4 pb-2 border-b border-gray-800 text-center">АВТОРИЗАЦИЯ</div>
+            <p className="mono-font text-xs text-gray-500 text-center mb-6 leading-relaxed">
+              Войди через Telegram — быстро и безопасно.<br/>Без паролей.
+            </p>
+            <div id="tg-widget-container" className="flex justify-center min-h-[50px]">
+              {authLoading && <div className="pixel-font text-xs text-gray-500 typing-cursor">АВТОРИЗАЦИЯ</div>}
+            </div>
+            {authError && (
+              <div className="pixel-font text-xs text-center mt-4" style={{ color: '#fff' }}>
+                <span className="tag-blocked">ОШИБКА</span> {authError}
+              </div>
+            )}
+          </div>
+
+          <div className="border border-gray-900 p-4">
+            <div className="pixel-font text-xs text-gray-700 mb-2 text-center">СИСТЕМА ВКЛЮЧАЕТ</div>
+            {['Защищённый ИИ-чат', 'Многоуровневая фильтрация', 'Анализ документов', 'Безопасный поиск', 'Архив диалогов'].map(f => (
+              <div key={f} className="mono-font text-xs text-gray-600 py-1 border-b border-gray-900 last:border-0">▸ {f}</div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // MAIN APP
+  const navItems = [
+    { id: 'home' as Section, label: 'ГЛАВНАЯ', icon: 'Home' },
+    { id: 'chats' as Section, label: 'ЧАТЫ', icon: 'MessageSquare' },
+    { id: 'docs' as Section, label: 'ДОКУМЕНТЫ', icon: 'FileText' },
+    { id: 'search' as Section, label: 'ПОИСК', icon: 'Search' },
+    { id: 'archive' as Section, label: 'АРХИВ', icon: 'Archive' },
+    { id: 'settings' as Section, label: 'НАСТРОЙКИ', icon: 'Settings' },
   ];
 
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col">
+    <div className="min-h-screen bg-black text-white flex flex-col" style={{ height: '100dvh' }}>
       {/* Header */}
-      <header className="border-b-2 border-white px-4 py-3 flex items-center justify-between scan-lines">
-        <div className="pixel-font text-xs sm:text-sm tracking-widest glitch" data-text="RM-XXXX_BETA">
-          RM-XXXX_BETA
-        </div>
-        <div className="flex items-center gap-4">
-          <div className="text-xs text-gray-500 mono-font hidden sm:block">
-            {new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+      <header className="border-b-2 border-white px-4 py-3 flex items-center justify-between scan-lines shrink-0">
+        <div className="pixel-font text-xs sm:text-sm tracking-widest glitch" data-text="RM-XXXX_BETA">RM-XXXX_BETA</div>
+        <div className="flex items-center gap-3">
+          <div className="tag-safe hidden sm:block">
+            {filterLevel === 'high' ? 'СТРОГИЙ' : filterLevel === 'medium' ? 'СРЕДНИЙ' : 'МЯГКИЙ'} ФИЛЬТР
           </div>
-          <div className="tag-safe">
-            {filterLevel === 'high' ? 'МАКС' : filterLevel === 'medium' ? 'СРЕДН' : 'МИН'} ФИЛЬТР
+          <div className="mono-font text-xs text-gray-500 hidden sm:block">
+            {user.first_name}{user.username ? ` @${user.username}` : ''}
           </div>
-          <div className="w-2 h-2 bg-white animate-blink" />
+          <button onClick={logout} className="pixel-btn text-xs px-2 py-1 border border-gray-700">ВЫХОД</button>
         </div>
       </header>
 
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}
-        <nav className="w-14 sm:w-48 border-r-2 border-white flex flex-col py-4 gap-1 shrink-0">
+        <nav className="w-12 sm:w-44 border-r-2 border-white flex flex-col py-2 shrink-0">
           {navItems.map(item => (
             <button
               key={item.id}
               onClick={() => { setSection(item.id); if (item.id !== 'chats') setActiveChat(null); }}
-              className={`pixel-btn w-full text-left flex items-center gap-3 px-3 py-3 border-0 border-b border-gray-800 ${section === item.id ? 'pixel-btn-active' : ''}`}
+              className={`pixel-btn w-full text-left flex items-center gap-3 px-3 py-3 border-0 border-b border-gray-900 ${section === item.id ? 'pixel-btn-active' : ''}`}
             >
-              <Icon name={item.icon} size={14} />
-              <span className="hidden sm:block text-[7px]">{item.label}</span>
+              <Icon name={item.icon} size={13} />
+              <span className="hidden sm:block text-[7px] leading-tight">{item.label}</span>
             </button>
           ))}
         </nav>
 
-        {/* Main */}
-        <main className="flex-1 overflow-auto">
+        {/* Main content */}
+        <main className="flex-1 overflow-hidden flex flex-col">
 
           {/* HOME */}
           {section === 'home' && (
-            <div className="p-6 sm:p-10 animate-fade-in">
-              <div className="max-w-2xl mx-auto">
-                <div className="pixel-font text-xs text-gray-500 tracking-widest mb-2">
-                  ДОБРО ПОЖАЛОВАТЬ В
-                </div>
-                <h1 className="pixel-font text-2xl sm:text-4xl text-white mb-1 leading-relaxed tracking-tight">
-                  RM-XXXX
-                </h1>
-                <div className="pixel-font text-sm text-gray-400 mb-8 typing-cursor">_BETA</div>
+            <div className="flex-1 overflow-auto p-5 sm:p-8 animate-fade-in">
+              <div className="max-w-xl mx-auto">
+                <div className="pixel-font text-xs text-gray-500 mb-1">ДОБРО ПОЖАЛОВАТЬ,</div>
+                <div className="pixel-font text-xl text-white mb-6">{user.first_name.toUpperCase()}</div>
 
-                <p className="mono-font text-gray-400 text-sm leading-relaxed mb-10 border-l-2 border-gray-600 pl-4">
-                  Защищённый ИИ-ассистент с многоуровневой системой фильтрации контента.<br/>
-                  Все запросы проходят проверку безопасности в реальном времени.
-                </p>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-10">
+                <div className="grid grid-cols-2 gap-3 mb-6">
                   {[
-                    { icon: 'MessageSquare', title: 'ЧАТЫ', desc: 'Диалоги с ИИ', action: () => setSection('chats') },
-                    { icon: 'FileText', title: 'ДОКУМЕНТЫ', desc: 'Загрузка и анализ файлов', action: () => setSection('docs') },
-                    { icon: 'Search', title: 'ПОИСК', desc: 'Безопасный поиск в сети', action: () => setSection('search') },
+                    { icon: 'MessageSquare', title: 'НОВЫЙ ЧАТ', desc: 'Начать диалог с ИИ', action: createChat },
+                    { icon: 'Search', title: 'ПОИСК', desc: 'Безопасный поиск', action: () => setSection('search') },
+                    { icon: 'FileText', title: 'ДОКУМЕНТЫ', desc: 'Загрузить и проанализировать', action: () => setSection('docs') },
                     { icon: 'Archive', title: 'АРХИВ', desc: 'История диалогов', action: () => setSection('archive') },
                   ].map(card => (
-                    <button
-                      key={card.title}
-                      onClick={card.action}
-                      className="border-2 border-gray-700 hover:border-white bg-black hover:bg-white hover:text-black transition-all p-5 text-left group"
-                    >
-                      <Icon name={card.icon} size={20} className="mb-3 group-hover:text-black" />
-                      <div className="pixel-font text-xs mb-2">{card.title}</div>
-                      <div className="mono-font text-xs text-gray-500 group-hover:text-gray-800">{card.desc}</div>
+                    <button key={card.title} onClick={card.action}
+                      className="border-2 border-gray-700 hover:border-white bg-black hover:bg-white hover:text-black p-4 text-left group transition-all">
+                      <Icon name={card.icon} size={18} className="mb-2" />
+                      <div className="pixel-font text-xs mb-1">{card.title}</div>
+                      <div className="mono-font text-xs text-gray-500 group-hover:text-gray-700">{card.desc}</div>
                     </button>
                   ))}
                 </div>
 
-                <button onClick={createNewChat} className="pixel-btn w-full py-4 text-xs tracking-widest">
-                  + НАЧАТЬ НОВЫЙ ДИАЛОГ
-                </button>
-
-                <div className="mt-8 border border-gray-800 p-4">
+                <div className="border border-gray-800 p-4">
                   <div className="pixel-font text-xs text-gray-600 mb-3">СТАТУС СИСТЕМЫ</div>
                   {[
-                    { name: 'МОДУЛЬ ФИЛЬТРАЦИИ', status: 'OK' },
-                    { name: 'ЗАЩИТА 18+', status: 'АКТИВНА' },
-                    { name: 'БЛОКИРОВКА МАТА', status: 'АКТИВНА' },
-                    { name: 'ЗАЩИТА ОТ ОПАСНЫХ ЗАПРОСОВ', status: 'АКТИВНА' },
+                    { name: 'АВТОРИЗАЦИЯ', val: 'TELEGRAM' },
+                    { name: 'ФИЛЬТР КОНТЕНТА', val: filterLevel.toUpperCase() },
+                    { name: 'ДИАЛОГОВ В АРХИВЕ', val: String(chats.length) },
+                    { name: 'СИСТЕМА БЕЗОПАСНОСТИ', val: 'АКТИВНА' },
                   ].map(s => (
-                    <div key={s.name} className="flex justify-between items-center py-1 border-b border-gray-900">
-                      <span className="mono-font text-xs text-gray-500">{s.name}</span>
-                      <span className="pixel-font text-xs text-white">{s.status}</span>
+                    <div key={s.name} className="flex justify-between py-1 border-b border-gray-900 last:border-0">
+                      <span className="mono-font text-xs text-gray-600">{s.name}</span>
+                      <span className="pixel-font text-xs text-white">{s.val}</span>
                     </div>
                   ))}
                 </div>
@@ -279,27 +470,25 @@ export default function Index() {
 
           {/* CHATS LIST */}
           {section === 'chats' && !activeChat && (
-            <div className="p-6 animate-fade-in">
-              <div className="flex justify-between items-center mb-6">
-                <div className="pixel-font text-xs text-white">ДИАЛОГИ</div>
-                <button onClick={createNewChat} className="pixel-btn text-xs">+ НОВЫЙ</button>
+            <div className="flex-1 overflow-auto p-5 animate-fade-in">
+              <div className="flex justify-between items-center mb-4">
+                <div className="pixel-font text-xs">ДИАЛОГИ</div>
+                <button onClick={createChat} className="pixel-btn text-xs">+ НОВЫЙ</button>
               </div>
+              {chatsLoading && <div className="pixel-font text-xs text-gray-600 typing-cursor">ЗАГРУЗКА</div>}
+              {!chatsLoading && chats.length === 0 && (
+                <div className="border border-gray-900 p-6 text-center">
+                  <div className="pixel-font text-xs text-gray-600 mb-3">НЕТ ДИАЛОГОВ</div>
+                  <button onClick={createChat} className="pixel-btn text-xs">+ НАЧАТЬ ПЕРВЫЙ ЧАТ</button>
+                </div>
+              )}
               <div className="space-y-2 max-w-xl">
                 {chats.map(chat => (
-                  <button
-                    key={chat.id}
-                    onClick={() => setActiveChat(chat)}
-                    className="w-full border-2 border-gray-700 hover:border-white p-4 text-left transition-all"
-                  >
-                    <div className="flex justify-between items-center">
-                      <span className="pixel-font text-xs">{chat.title}</span>
-                      <span className="mono-font text-xs text-gray-600">{chat.date}</span>
-                    </div>
-                    <div className="mono-font text-xs text-gray-500 mt-2 truncate">
-                      {chat.messages[chat.messages.length - 1]?.text.substring(0, 60)}...
-                    </div>
-                    <div className="mono-font text-xs text-gray-700 mt-1">
-                      {chat.messages.length} сообщений
+                  <button key={chat.id} onClick={() => openChat(chat)}
+                    className="w-full border-2 border-gray-800 hover:border-white p-4 text-left transition-all">
+                    <div className="flex justify-between">
+                      <span className="pixel-font text-xs truncate max-w-[70%]">{chat.title}</span>
+                      <span className="mono-font text-xs text-gray-600 shrink-0">{new Date(chat.updated_at).toLocaleDateString('ru-RU')}</span>
                     </div>
                   </button>
                 ))}
@@ -309,164 +498,206 @@ export default function Index() {
 
           {/* CHAT OPEN */}
           {section === 'chats' && activeChat && (
-            <div className="flex flex-col animate-fade-in" style={{ height: 'calc(100vh - 57px)' }}>
-              <div className="border-b-2 border-gray-800 px-4 py-2 flex items-center gap-3">
-                <button onClick={() => setActiveChat(null)} className="pixel-btn text-xs px-2 py-1 border border-gray-600">←</button>
-                <span className="pixel-font text-xs">{activeChat.title}</span>
+            <div className="flex-1 flex flex-col overflow-hidden animate-fade-in">
+              <div className="border-b-2 border-gray-800 px-4 py-2 flex items-center gap-3 shrink-0">
+                <button onClick={() => { setActiveChat(null); loadChats(); }} className="pixel-btn text-xs px-2 py-1">←</button>
+                <span className="pixel-font text-xs truncate">{activeChat.title}</span>
               </div>
               <div className="flex-1 overflow-auto p-4 space-y-3">
-                {activeChat.messages.map(msg => (
-                  <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={msg.role === 'user' ? 'chat-bubble-user' : msg.blocked ? 'chat-bubble-ai border-gray-600' : 'chat-bubble-ai'}>
-                      {msg.blocked && <div className="tag-blocked mb-2">ЗАБЛОКИРОВАНО</div>}
-                      <div className={msg.blocked ? 'text-gray-500' : ''}>{msg.text}</div>
+                {messages.map((msg, i) => (
+                  <div key={msg.id || i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={msg.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-ai'}>
+                      {msg.blocked && (
+                        <div className="tag-blocked mb-2">{msg.block_reason || 'ЗАБЛОКИРОВАНО'}</div>
+                      )}
+                      <span className={msg.blocked ? 'text-gray-500' : ''}>{msg.content}</span>
                     </div>
                   </div>
                 ))}
+                {sending && (
+                  <div className="flex justify-start">
+                    <div className="chat-bubble-ai">
+                      <span className="pixel-font text-xs text-gray-500 typing-cursor">ОБРАБОТКА</span>
+                    </div>
+                  </div>
+                )}
                 <div ref={messagesEndRef} />
               </div>
-              <div className="border-t-2 border-gray-800 p-3 flex gap-2">
+              <div className="border-t-2 border-gray-800 p-3 flex gap-2 shrink-0">
                 <input
-                  className="pixel-input"
+                  className="pixel-input flex-1"
                   placeholder="ВВЕДИТЕ ЗАПРОС..."
                   value={inputText}
                   onChange={e => setInputText(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && sendMessage()}
+                  onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendMessage()}
+                  disabled={sending}
                 />
-                <button onClick={sendMessage} className="pixel-btn px-4">→</button>
+                <button onClick={sendMessage} disabled={sending} className="pixel-btn px-4">→</button>
               </div>
             </div>
           )}
 
           {/* DOCS */}
           {section === 'docs' && (
-            <div className="p-6 animate-fade-in max-w-xl">
-              <div className="pixel-font text-xs text-white mb-6">ЗАГРУЗКА ДОКУМЕНТОВ</div>
+            <div className="flex-1 overflow-auto p-5 animate-fade-in">
+              <div className="max-w-xl">
+                <div className="pixel-font text-xs mb-5">ДОКУМЕНТЫ</div>
+                <div
+                  className="border-2 border-dashed border-gray-600 hover:border-white p-8 text-center cursor-pointer transition-all mb-5"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Icon name="Upload" size={22} className="mx-auto mb-3 text-gray-600" />
+                  <div className="pixel-font text-xs text-gray-500 mb-1">{uploading ? 'АНАЛИЗ...' : 'ВЫБРАТЬ ФАЙЛ'}</div>
+                  <div className="mono-font text-xs text-gray-700">.txt, .pdf, .doc, .docx, .md</div>
+                  <input ref={fileInputRef} type="file" accept=".txt,.pdf,.doc,.docx,.md" className="hidden" onChange={handleFileUpload} />
+                </div>
 
-              <div
-                className="border-2 border-dashed border-gray-600 hover:border-white p-10 text-center cursor-pointer transition-all mb-4"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <Icon name="Upload" size={24} className="mx-auto mb-3 text-gray-600" />
-                <div className="pixel-font text-xs text-gray-500 mb-1">ВЫБРАТЬ ФАЙЛ</div>
-                <div className="mono-font text-xs text-gray-700">.txt, .pdf, .doc, .docx</div>
-                <input ref={fileInputRef} type="file" accept=".txt,.pdf,.doc,.docx" className="hidden" onChange={handleFileUpload} />
-              </div>
-
-              {uploadedDoc && (
-                <div className="border-2 border-gray-700 p-4 mb-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Icon name="FileText" size={14} />
-                    <span className="mono-font text-sm">{uploadedDoc}</span>
+                {uploading && (
+                  <div className="border-2 border-gray-700 p-4 mb-4">
+                    <div className="pixel-font text-xs text-gray-500 typing-cursor">АНАЛИЗ ДОКУМЕНТА</div>
                   </div>
-                  {!docAnalysis && (
-                    <div className="pixel-font text-xs text-gray-500 typing-cursor">АНАЛИЗ</div>
-                  )}
-                </div>
-              )}
+                )}
 
-              {docAnalysis && (
-                <div className="border-2 border-white p-4 animate-fade-in">
-                  <div className="pixel-font text-xs mb-3 text-white">РЕЗУЛЬТАТ АНАЛИЗА</div>
-                  <pre className="mono-font text-xs text-gray-300 whitespace-pre-wrap leading-relaxed">{docAnalysis}</pre>
-                </div>
-              )}
+                {uploadResult && !uploading && (
+                  <div className={`border-2 p-4 mb-5 animate-fade-in ${uploadResult.safe ? 'border-white' : 'border-gray-600'}`}>
+                    <div className="flex items-center gap-2 mb-3">
+                      {uploadResult.safe
+                        ? <div className="tag-safe">БЕЗОПАСНО</div>
+                        : <div className="tag-blocked">УГРОЗА</div>}
+                      <span className="pixel-font text-xs">{uploadResult.filename}</span>
+                    </div>
+                    {uploadResult.issues?.length > 0 && (
+                      <div className="mono-font text-xs text-gray-500 mb-2">
+                        Обнаружено: {uploadResult.issues.join(', ')}
+                      </div>
+                    )}
+                    <div className="grid grid-cols-2 gap-2 mb-3">
+                      {[
+                        ['СЛОВ', uploadResult.stats?.words],
+                        ['СИМВОЛОВ', uploadResult.stats?.chars],
+                        ['ПРЕДЛОЖЕНИЙ', uploadResult.stats?.sentences],
+                        ['ЯЗЫК', uploadResult.stats?.lang],
+                      ].map(([k, v]) => (
+                        <div key={k as string} className="border border-gray-800 p-2">
+                          <div className="pixel-font text-xs text-gray-600" style={{ fontSize: '6px' }}>{k}</div>
+                          <div className="mono-font text-sm text-white">{v}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {uploadResult.preview && (
+                      <div className="border border-gray-800 p-3">
+                        <div className="pixel-font text-gray-600 mb-1" style={{ fontSize: '6px' }}>ПРЕВЬЮ</div>
+                        <div className="mono-font text-xs text-gray-400 leading-relaxed whitespace-pre-wrap">{uploadResult.preview}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
 
-              {!uploadedDoc && (
-                <div className="border border-gray-900 p-4 mt-6">
-                  <div className="pixel-font text-xs text-gray-700 mb-2">ВОЗМОЖНОСТИ</div>
-                  {['Извлечение текста из документов', 'Проверка на запрещённый контент', 'Анализ структуры и содержания', 'Безопасное хранение в архиве'].map(f => (
-                    <div key={f} className="mono-font text-xs text-gray-600 py-1 border-b border-gray-900">▸ {f}</div>
-                  ))}
-                </div>
-              )}
+                {docsLoading && <div className="pixel-font text-xs text-gray-600 typing-cursor">ЗАГРУЗКА</div>}
+                {!docsLoading && docs.length > 0 && (
+                  <div>
+                    <div className="pixel-font text-xs text-gray-600 mb-3">ЗАГРУЖЕННЫЕ ДОКУМЕНТЫ</div>
+                    <div className="space-y-2">
+                      {docs.map(doc => (
+                        <div key={doc.id} className="border border-gray-800 p-3 flex justify-between items-center">
+                          <div>
+                            <div className="mono-font text-xs mb-1">{doc.filename}</div>
+                            <div className="mono-font text-xs text-gray-600">{(doc.file_size / 1024).toFixed(1)} KB · {new Date(doc.created_at).toLocaleDateString('ru-RU')}</div>
+                          </div>
+                          {doc.safe ? <div className="tag-safe">OK</div> : <div className="tag-blocked">!</div>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
           {/* SEARCH */}
           {section === 'search' && (
-            <div className="p-6 animate-fade-in max-w-2xl">
-              <div className="pixel-font text-xs text-white mb-6">БЕЗОПАСНЫЙ ПОИСК</div>
+            <div className="flex-1 overflow-auto p-5 animate-fade-in">
+              <div className="max-w-xl">
+                <div className="pixel-font text-xs mb-5">БЕЗОПАСНЫЙ ПОИСК</div>
+                <div className="flex gap-2 mb-3">
+                  <input
+                    className="pixel-input flex-1"
+                    placeholder="ПОИСКОВЫЙ ЗАПРОС..."
+                    value={searchQuery}
+                    onChange={e => setSearchQuery(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && doSearch()}
+                    disabled={searchLoading}
+                  />
+                  <button onClick={doSearch} disabled={searchLoading} className="pixel-btn px-4 shrink-0">
+                    {searchLoading ? '...' : 'ПОИСК'}
+                  </button>
+                </div>
+                <div className="flex items-center gap-2 mb-5">
+                  <span className="mono-font text-xs text-gray-600">Фильтр:</span>
+                  <div className="tag-safe">{filterLevel === 'high' ? 'СТРОГИЙ' : filterLevel === 'medium' ? 'СРЕДНИЙ' : 'МЯГКИЙ'}</div>
+                  <button onClick={() => setSection('settings')} className="mono-font text-xs text-gray-700 hover:text-white">изменить →</button>
+                </div>
 
-              <div className="flex gap-2 mb-2">
-                <input
-                  className="pixel-input"
-                  placeholder="ПОИСКОВЫЙ ЗАПРОС..."
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && doSearch()}
-                />
-                <button onClick={doSearch} className="pixel-btn px-4 shrink-0">ПОИСК</button>
-              </div>
+                {searchDone && searchBlocked && (
+                  <div className="border-2 border-gray-800 p-5 animate-fade-in">
+                    <div className="tag-blocked mb-3">ЗАБЛОКИРОВАНО</div>
+                    <div className="pixel-font text-xs text-gray-500">{searchReason}</div>
+                    <div className="mono-font text-xs text-gray-600 mt-2">Запрос заблокирован системой безопасности. Измените запрос или уровень фильтра.</div>
+                  </div>
+                )}
 
-              <div className="flex items-center gap-2 mb-6">
-                <span className="mono-font text-xs text-gray-600">Уровень фильтра:</span>
-                <div className="tag-safe">{filterLevel === 'high' ? 'СТРОГИЙ' : filterLevel === 'medium' ? 'СРЕДНИЙ' : 'МЯГКИЙ'}</div>
-                <button onClick={() => setSection('settings')} className="mono-font text-xs text-gray-700 hover:text-white underline">изменить</button>
-              </div>
-
-              {searchDone && (
-                <div className="space-y-3 animate-fade-in">
-                  <div className="pixel-font text-xs text-gray-600 mb-3">РЕЗУЛЬТАТЫ: {searchResults.length}</div>
-                  {searchResults.map(r => (
-                    <div key={r.id} className={`border-2 p-4 ${r.safe ? 'border-gray-700' : 'border-gray-800 opacity-50'}`}>
-                      <div className="flex items-center gap-2 mb-1">
-                        {r.safe ? <div className="tag-safe">БЕЗОПАСНО</div> : <div className="tag-blocked">ЗАБЛОК</div>}
-                        <span className="mono-font text-xs text-gray-500">{r.url}</span>
+                {searchDone && !searchBlocked && (
+                  <div className="space-y-3 animate-fade-in">
+                    <div className="pixel-font text-xs text-gray-600 mb-2">РЕЗУЛЬТАТЫ: {searchResults.length}</div>
+                    {searchResults.length === 0 && (
+                      <div className="mono-font text-xs text-gray-600">По запросу ничего не найдено.</div>
+                    )}
+                    {searchResults.map((r, i) => (
+                      <div key={i} className="border-2 border-gray-800 hover:border-gray-600 p-4 transition-all">
+                        <div className="flex items-center gap-2 mb-2">
+                          <div className="tag-safe">БЕЗОПАСНО</div>
+                          <span className="mono-font text-xs text-gray-600">{r.url}</span>
+                        </div>
+                        <div className="pixel-font text-xs text-white mb-2">{r.title}</div>
+                        <div className="mono-font text-xs text-gray-500">{r.snippet}</div>
                       </div>
-                      <div className="pixel-font text-xs mb-2 mt-2 text-white">{r.title}</div>
-                      <div className="mono-font text-xs text-gray-500">{r.snippet}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
+                    ))}
+                  </div>
+                )}
 
-              {!searchDone && (
-                <div className="border border-gray-900 p-4">
-                  <div className="pixel-font text-xs text-gray-700 mb-3">АКТИВНЫЕ ФИЛЬТРЫ</div>
-                  {[
-                    filterLevel !== 'low' ? 'Блокировка опасных запросов' : null,
-                    filterLevel === 'high' ? 'Блокировка контента 18+' : null,
-                    filterLevel === 'high' ? 'Блокировка нецензурной лексики' : null,
-                  ].filter(Boolean).map(f => (
-                    <div key={f as string} className="mono-font text-xs text-gray-600 py-1">■ {f}</div>
-                  ))}
-                  {filterLevel === 'low' && <div className="mono-font text-xs text-gray-700">Минимальная фильтрация активна</div>}
-                </div>
-              )}
+                {!searchDone && (
+                  <div className="border border-gray-900 p-4">
+                    <div className="pixel-font text-xs text-gray-700 mb-3">АКТИВНЫЕ ФИЛЬТРЫ</div>
+                    {filterLevel !== 'low' && <div className="mono-font text-xs text-gray-600 py-1">■ Блокировка опасных запросов</div>}
+                    {filterLevel === 'high' && <div className="mono-font text-xs text-gray-600 py-1">■ Блокировка контента 18+</div>}
+                    {filterLevel === 'high' && <div className="mono-font text-xs text-gray-600 py-1">■ Блокировка нецензурной лексики</div>}
+                    {filterLevel === 'low' && <div className="mono-font text-xs text-gray-600 py-1">■ Минимальная фильтрация</div>}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
           {/* ARCHIVE */}
           {section === 'archive' && (
-            <div className="p-6 animate-fade-in max-w-2xl">
-              <div className="pixel-font text-xs text-white mb-6">АРХИВ ДИАЛОГОВ</div>
-              <div className="space-y-4">
+            <div className="flex-1 overflow-auto p-5 animate-fade-in">
+              <div className="pixel-font text-xs mb-5">АРХИВ ДИАЛОГОВ</div>
+              {chatsLoading && <div className="pixel-font text-xs text-gray-600 typing-cursor">ЗАГРУЗКА</div>}
+              {!chatsLoading && chats.length === 0 && (
+                <div className="mono-font text-xs text-gray-600">Архив пуст. Начни диалог в разделе «Чаты».</div>
+              )}
+              <div className="space-y-3 max-w-xl">
                 {chats.map(chat => (
                   <div key={chat.id} className="border-2 border-gray-800 p-4">
-                    <div className="flex justify-between items-center mb-3">
-                      <span className="pixel-font text-xs">{chat.title}</span>
-                      <div className="flex items-center gap-2">
-                        <span className="mono-font text-xs text-gray-600">{chat.date}</span>
-                        <button
-                          onClick={() => { setActiveChat(chat); setSection('chats'); }}
-                          className="pixel-btn text-xs px-2 py-1"
-                        >ОТКРЫТЬ</button>
+                    <div className="flex justify-between items-center">
+                      <span className="pixel-font text-xs truncate max-w-[60%]">{chat.title}</span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="mono-font text-xs text-gray-600">{new Date(chat.updated_at).toLocaleDateString('ru-RU')}</span>
+                        <button onClick={() => openChat(chat)} className="pixel-btn text-xs px-2 py-1">→</button>
                       </div>
                     </div>
-                    <div className="space-y-2">
-                      {chat.messages.map(msg => (
-                        <div key={msg.id} className="flex items-start gap-2">
-                          <span className="pixel-font text-xs text-gray-600 shrink-0 w-6">
-                            {msg.role === 'user' ? 'USR' : 'SYS'}
-                          </span>
-                          <span className="mono-font text-xs text-gray-500 truncate">{msg.text.substring(0, 80)}</span>
-                          {msg.blocked && <div className="tag-blocked shrink-0">!</div>}
-                        </div>
-                      ))}
-                    </div>
-                    <div className="mono-font text-xs text-gray-700 mt-3 pt-2 border-t border-gray-900">
-                      СООБЩЕНИЙ: {chat.messages.length} | ЗАБЛОК: {chat.messages.filter(m => m.blocked).length}
+                    <div className="mono-font text-xs text-gray-700 mt-2">
+                      Создан: {new Date(chat.created_at).toLocaleString('ru-RU')}
                     </div>
                   </div>
                 ))}
@@ -476,94 +707,61 @@ export default function Index() {
 
           {/* SETTINGS */}
           {section === 'settings' && (
-            <div className="p-6 animate-fade-in max-w-xl">
-              <div className="pixel-font text-xs text-white mb-8">НАСТРОЙКИ СИСТЕМЫ</div>
+            <div className="flex-1 overflow-auto p-5 animate-fade-in">
+              <div className="max-w-md">
+                <div className="pixel-font text-xs mb-6">НАСТРОЙКИ</div>
 
-              <div className="border-2 border-gray-800 p-5 mb-4">
-                <div className="pixel-font text-xs text-gray-400 mb-4 pb-2 border-b border-gray-800">ФИЛЬТРАЦИЯ КОНТЕНТА</div>
-                <div className="mb-4">
-                  <div className="mono-font text-xs text-gray-500 mb-3">Уровень строгости:</div>
-                  <div className="flex gap-2">
+                {/* Profile */}
+                <div className="border-2 border-gray-800 p-4 mb-4">
+                  <div className="pixel-font text-xs text-gray-500 mb-3 pb-2 border-b border-gray-800">АККАУНТ</div>
+                  <div className="flex items-center gap-3">
+                    {user.photo_url && <img src={user.photo_url} alt="" className="w-10 h-10 border-2 border-gray-600" style={{ imageRendering: 'pixelated' }} />}
+                    <div>
+                      <div className="pixel-font text-xs">{user.first_name} {user.last_name}</div>
+                      {user.username && <div className="mono-font text-xs text-gray-500 mt-1">@{user.username}</div>}
+                      <div className="mono-font text-xs text-gray-600">ID: {user.telegram_id}</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Filter level */}
+                <div className="border-2 border-gray-800 p-4 mb-4">
+                  <div className="pixel-font text-xs text-gray-500 mb-3 pb-2 border-b border-gray-800">УРОВЕНЬ ФИЛЬТРАЦИИ</div>
+                  <div className="flex gap-2 mb-3">
                     {(['low', 'medium', 'high'] as const).map(lvl => (
-                      <button
-                        key={lvl}
-                        onClick={() => setFilterLevel(lvl)}
-                        className={`pixel-btn flex-1 py-3 text-xs ${filterLevel === lvl ? 'pixel-btn-active' : ''}`}
-                      >
+                      <button key={lvl} onClick={() => setFilterLevel(lvl)}
+                        className={`pixel-btn flex-1 py-3 text-xs ${filterLevel === lvl ? 'pixel-btn-active' : ''}`}>
                         {lvl === 'low' ? 'МЯГКИЙ' : lvl === 'medium' ? 'СРЕДНИЙ' : 'СТРОГИЙ'}
                       </button>
                     ))}
                   </div>
-                  <div className="mono-font text-xs text-gray-600 mt-3 p-3 border border-gray-900">
-                    {filterLevel === 'low' && '▸ Только блокировка опасных запросов'}
-                    {filterLevel === 'medium' && '▸ Блокировка опасных запросов + нецензурных слов'}
-                    {filterLevel === 'high' && '▸ Максимальная защита: опасные + 18+ + мат'}
+                  <div className="mono-font text-xs text-gray-600 p-3 border border-gray-900">
+                    {filterLevel === 'low' && '▸ Только опасные запросы'}
+                    {filterLevel === 'medium' && '▸ Опасные запросы + грубая лексика'}
+                    {filterLevel === 'high' && '▸ Максимум: опасные + 18+ + нецензурная лексика'}
                   </div>
-                </div>
-                <div className="space-y-2">
-                  {[
-                    { label: 'Блокировка нецензурной лексики', active: filterLevel !== 'low' },
-                    { label: 'Блокировка контента 18+', active: filterLevel === 'high' },
-                    { label: 'Блокировка опасных запросов', active: true },
-                  ].map(item => (
-                    <div key={item.label} className="flex justify-between items-center py-2 border-b border-gray-900">
-                      <span className="mono-font text-xs text-gray-500">{item.label}</span>
-                      <span className={`pixel-font text-xs ${item.active ? 'text-white' : 'text-gray-700'}`}>
-                        {item.active ? '■ ВКЛ' : '□ ВЫКЛ'}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="border-2 border-gray-800 p-5 mb-4">
-                <div className="pixel-font text-xs text-gray-400 mb-4 pb-2 border-b border-gray-800">ЯЗЫК ИНТЕРФЕЙСА</div>
-                <div className="flex gap-2">
-                  {(['ru', 'en'] as const).map(lang => (
-                    <button
-                      key={lang}
-                      onClick={() => setLanguage(lang)}
-                      className={`pixel-btn flex-1 py-3 text-xs ${language === lang ? 'pixel-btn-active' : ''}`}
-                    >
-                      {lang === 'ru' ? 'РУССКИЙ' : 'ENGLISH'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="border-2 border-gray-800 p-5 mb-4">
-                <div className="pixel-font text-xs text-gray-400 mb-4 pb-2 border-b border-gray-800">БЕЗОПАСНОСТЬ АККАУНТА</div>
-                <div className="flex justify-between items-center py-2">
-                  <span className="mono-font text-xs text-gray-500">Двухфакторная аутентификация</span>
-                  <button
-                    onClick={() => setTwoFactor(p => !p)}
-                    className={`pixel-btn text-xs px-3 py-2 ${twoFactor ? 'pixel-btn-active' : ''}`}
-                  >
-                    {twoFactor ? '■ ВКЛ' : '□ ВЫКЛ'}
+                  <div className="mt-3 space-y-1">
+                    {[
+                      { label: 'Блокировка опасных запросов', on: true },
+                      { label: 'Блокировка 18+ контента', on: filterLevel === 'high' },
+                      { label: 'Блокировка нецензурной лексики', on: filterLevel !== 'low' },
+                    ].map(item => (
+                      <div key={item.label} className="flex justify-between items-center py-1 border-b border-gray-900">
+                        <span className="mono-font text-xs text-gray-500">{item.label}</span>
+                        <span className={`pixel-font text-xs ${item.on ? 'text-white' : 'text-gray-700'}`}>{item.on ? '■ ВКЛ' : '□ ВЫКЛ'}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={saveSettings} disabled={settingsSaving}
+                    className={`pixel-btn w-full mt-4 py-3 text-xs ${settingsSaved ? 'pixel-btn-active' : ''}`}>
+                    {settingsSaving ? 'СОХРАНЕНИЕ...' : settingsSaved ? '■ СОХРАНЕНО' : 'СОХРАНИТЬ'}
                   </button>
                 </div>
-                <div className="flex justify-between items-center py-2 border-t border-gray-900">
-                  <span className="mono-font text-xs text-gray-500">Сменить пароль</span>
-                  <button className="pixel-btn text-xs px-3 py-2">→ СМЕНИТЬ</button>
-                </div>
-                <div className="flex justify-between items-center py-2 border-t border-gray-900">
-                  <span className="mono-font text-xs text-gray-500">Экспорт данных</span>
-                  <button className="pixel-btn text-xs px-3 py-2">↓ ЭКСПОРТ</button>
-                </div>
-              </div>
 
-              <div className="border-2 border-gray-800 p-5">
-                <div className="pixel-font text-xs text-gray-400 mb-4 pb-2 border-b border-gray-800">ОТОБРАЖЕНИЕ</div>
-                <div className="flex gap-2">
-                  {(['dark', 'light'] as const).map(t => (
-                    <button
-                      key={t}
-                      onClick={() => setTheme(t)}
-                      className={`pixel-btn flex-1 py-3 text-xs ${theme === t ? 'pixel-btn-active' : ''}`}
-                    >
-                      {t === 'dark' ? '◼ ТЁМНАЯ' : '◻ СВЕТЛАЯ'}
-                    </button>
-                  ))}
+                {/* Danger zone */}
+                <div className="border-2 border-gray-800 p-4">
+                  <div className="pixel-font text-xs text-gray-500 mb-3 pb-2 border-b border-gray-800">СЕССИЯ</div>
+                  <button onClick={logout} className="pixel-btn w-full py-3 text-xs">ВЫЙТИ ИЗ АККАУНТА</button>
                 </div>
               </div>
             </div>
@@ -573,11 +771,9 @@ export default function Index() {
       </div>
 
       {/* Footer */}
-      <footer className="border-t-2 border-gray-900 px-4 py-2 flex justify-between items-center">
-        <div className="pixel-font text-xs text-gray-700">RM-XXXX_BETA v1.0</div>
-        <div className="mono-font text-xs text-gray-700">
-          ФИЛЬТР: {filterLevel.toUpperCase()} | ДИАЛОГОВ: {chats.length}
-        </div>
+      <footer className="border-t-2 border-gray-900 px-4 py-2 flex justify-between items-center shrink-0">
+        <div className="pixel-font text-xs text-gray-700">RM-XXXX_BETA v2.0</div>
+        <div className="mono-font text-xs text-gray-700">ФИЛЬТР: {filterLevel.toUpperCase()}</div>
       </footer>
     </div>
   );
