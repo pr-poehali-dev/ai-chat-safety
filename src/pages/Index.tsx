@@ -68,6 +68,10 @@ export default function Index() {
   const [section, setSection] = useState<Section>('home');
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  const [pendingCode, setPendingCode] = useState("");
+  const [codeStep, setCodeStep] = useState(false);
+  const [codeInput, setCodeInput] = useState("");
+  const [polling, setPolling] = useState(false);
 
   // Chats
   const [chats, setChats] = useState<Chat[]>([]);
@@ -126,7 +130,7 @@ export default function Index() {
     }
   }, [bootDone]);
 
-  // Telegram login callback
+  // Telegram widget callback (работает только если домен настроен в BotFather)
   useEffect(() => {
     (window as unknown as Record<string, unknown>).onTelegramAuth = async (tgData: Record<string, unknown>) => {
       setAuthLoading(true);
@@ -134,7 +138,7 @@ export default function Index() {
       try {
         const res = await apiFetch(API.auth, {
           method: "POST",
-          body: JSON.stringify({ tg_data: tgData })
+          body: JSON.stringify({ action: "login_tg", tg_data: tgData })
         });
         const data = await res.json();
         if (data.token) {
@@ -143,7 +147,7 @@ export default function Index() {
           setUser(data.user);
           setFilterLevel(data.user.filter_level || 'medium');
         } else {
-          setAuthError("Ошибка авторизации. Попробуй ещё раз.");
+          setAuthError("Ошибка авторизации.");
         }
       } catch {
         setAuthError("Ошибка соединения.");
@@ -153,21 +157,70 @@ export default function Index() {
     };
   }, []);
 
-  // Load Telegram widget script
+  // Запросить код для входа через бота
+  async function requestCode() {
+    setAuthLoading(true);
+    setAuthError("");
+    try {
+      const res = await apiFetch(API.auth, {
+        method: "POST",
+        body: JSON.stringify({ action: "request_code" })
+      });
+      const data = await res.json();
+      if (data.code) {
+        setPendingCode(data.code);
+        setCodeStep(true);
+        setPolling(true);
+      }
+    } catch {
+      setAuthError("Ошибка соединения.");
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  // Проверить код вручную
+  async function checkCode(codeToCheck: string) {
+    if (!codeToCheck) return;
+    setAuthLoading(true);
+    setAuthError("");
+    try {
+      const res = await apiFetch(`${API.auth}?action=check_code&code=${codeToCheck}`);
+      const data = await res.json();
+      if (data.confirmed && data.token) {
+        setPolling(false);
+        localStorage.setItem("rm_token", data.token);
+        setToken(data.token);
+        setUser(data.user);
+        setFilterLevel(data.user.filter_level || 'medium');
+      } else if (!data.confirmed) {
+        setAuthError("Код ещё не подтверждён. Отправь его боту.");
+      }
+    } catch {
+      setAuthError("Ошибка соединения.");
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  // Автополинг — проверяем каждые 3 секунды
   useEffect(() => {
-    if (!bootDone || user) return;
-    const existing = document.getElementById("tg-login-script");
-    if (existing) return;
-    const script = document.createElement("script");
-    script.id = "tg-login-script";
-    script.src = "https://telegram.org/js/telegram-widget.js?22";
-    script.setAttribute("data-telegram-login", TG_BOT_NAME);
-    script.setAttribute("data-size", "large");
-    script.setAttribute("data-onauth", "onTelegramAuth(user)");
-    script.setAttribute("data-request-access", "write");
-    script.async = true;
-    document.getElementById("tg-widget-container")?.appendChild(script);
-  }, [bootDone, user]);
+    if (!polling || !pendingCode) return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await apiFetch(`${API.auth}?action=check_code&code=${pendingCode}`);
+        const data = await res.json();
+        if (data.confirmed && data.token) {
+          setPolling(false);
+          localStorage.setItem("rm_token", data.token);
+          setToken(data.token);
+          setUser(data.user);
+          setFilterLevel(data.user.filter_level || 'medium');
+        }
+      } catch { /* ignore */ }
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [polling, pendingCode]);
 
   // Scroll to bottom
   useEffect(() => {
@@ -359,14 +412,81 @@ export default function Index() {
 
           <div className="border-2 border-gray-800 p-6 mb-4">
             <div className="pixel-font text-xs text-gray-500 mb-4 pb-2 border-b border-gray-800 text-center">АВТОРИЗАЦИЯ</div>
-            <p className="mono-font text-xs text-gray-500 text-center mb-6 leading-relaxed">
-              Войди через Telegram — быстро и безопасно.<br/>Без паролей.
-            </p>
-            <div id="tg-widget-container" className="flex justify-center min-h-[50px]">
-              {authLoading && <div className="pixel-font text-xs text-gray-500 typing-cursor">АВТОРИЗАЦИЯ</div>}
-            </div>
+
+            {!codeStep ? (
+              <>
+                <p className="mono-font text-xs text-gray-500 text-center mb-6 leading-relaxed">
+                  Войди через Telegram — быстро и безопасно.<br/>Без паролей.
+                </p>
+                <button
+                  onClick={requestCode}
+                  disabled={authLoading}
+                  className="w-full pixel-btn py-4 text-sm flex items-center justify-center gap-3"
+                  style={{ background: '#0088cc', color: 'white', border: '2px solid #0088cc' }}
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+                    <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.248l-2.007 9.454c-.148.666-.537.833-1.092.518l-3-2.21-1.447 1.393c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12L7.48 14.49l-2.95-.924c-.64-.198-.653-.64.136-.949l11.533-4.448c.533-.194 1.002.13.363.079z"/>
+                  </svg>
+                  {authLoading ? 'ЗАГРУЗКА...' : 'ВОЙТИ ЧЕРЕЗ TELEGRAM'}
+                </button>
+              </>
+            ) : (
+              <div className="animate-fade-in">
+                <div className="border-2 border-white p-4 mb-4 text-center">
+                  <div className="pixel-font text-xs text-gray-500 mb-2">ТВО Й КОД ВХОДА</div>
+                  <div className="pixel-font text-4xl text-white tracking-widest mb-2">{pendingCode}</div>
+                  <div className="mono-font text-xs text-gray-600">Действует 10 минут</div>
+                </div>
+
+                <div className="border border-gray-800 p-3 mb-4">
+                  <div className="pixel-font text-xs text-gray-600 mb-2">КАК ВОЙТИ:</div>
+                  <div className="space-y-1">
+                    <div className="mono-font text-xs text-gray-500">1. Открой бота в Telegram</div>
+                    <div className="mono-font text-xs text-gray-500">2. Отправь ему: <span className="text-white">/start {pendingCode}</span></div>
+                    <div className="mono-font text-xs text-gray-500">3. Вход выполнится автоматически</div>
+                  </div>
+                </div>
+
+                <a
+                  href={`https://t.me/${TG_BOT_NAME}?start=${pendingCode}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block w-full pixel-btn py-3 text-xs text-center mb-3"
+                  style={{ background: '#0088cc', color: 'white', border: '2px solid #0088cc' }}
+                >
+                  ОТКРЫТЬ БОТА В TELEGRAM →
+                </a>
+
+                {polling && (
+                  <div className="pixel-font text-xs text-gray-600 text-center typing-cursor mb-3">
+                    ОЖИДАЮ ПОДТВЕРЖДЕНИЯ
+                  </div>
+                )}
+
+                <div className="border-t border-gray-800 pt-3">
+                  <div className="pixel-font text-xs text-gray-700 mb-2">ИЛИ ВВЕДИ КОД ВРУЧНУЮ:</div>
+                  <div className="flex gap-2">
+                    <input
+                      className="pixel-input flex-1 text-center text-lg tracking-widest"
+                      placeholder="000000"
+                      maxLength={6}
+                      value={codeInput}
+                      onChange={e => setCodeInput(e.target.value.replace(/\D/g, ''))}
+                      onKeyDown={e => e.key === 'Enter' && checkCode(codeInput)}
+                    />
+                    <button onClick={() => checkCode(codeInput)} disabled={authLoading} className="pixel-btn px-4">ОК</button>
+                  </div>
+                </div>
+
+                <button onClick={() => { setCodeStep(false); setPendingCode(""); setPolling(false); setAuthError(""); }}
+                  className="pixel-btn w-full mt-3 text-xs py-2 border-gray-800">
+                  ← НАЗАД
+                </button>
+              </div>
+            )}
+
             {authError && (
-              <div className="pixel-font text-xs text-center mt-4" style={{ color: '#fff' }}>
+              <div className="pixel-font text-xs text-center mt-4">
                 <span className="tag-blocked">ОШИБКА</span> {authError}
               </div>
             )}
